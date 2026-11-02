@@ -1,14 +1,22 @@
-# Week 3 Assignment: Classical Motion Tracking
+# Week 3 Deliverable: Classical Vehicle Motion Tracker
 
-## Core Objective
-This repository contains a foundational computer vision pipeline focusing on geometric feature extraction and tracking without relying on deep learning inference frameworks.
+## Overview
+This repository contains a classical Computer Vision implementation for tracking vehicles across video frames using sparse feature extraction and geometric displacement techniques.
 
-## Technical Implementation
-* **Feature Detection & Description**: Utilizes the **ORB (Oriented FAST and Rotated BRIEF)** algorithm, optimized for efficient, real-time edge applications.
-* **Vector Filtration**: Leverages a **Brute-Force Hamming Distance Matcher** paired with **Lowe's Ratio Test** to eliminate background noise and isolate valid vehicle trajectories.
-* **Image Preprocessing**: Integrated local contrast enhancement via **CLAHE** to resolve keypoints on low-contrast vehicle surfaces.
+## Features Implemented
+* **Sparse Optical Flow (Lucas-Kanade):** Tracks displacement vectors of Shi-Tomasi corners across consecutive frame pyramids.
+* **Feature Descriptor Matching (ORB):** Leverages binary descriptors with Hamming distance and Lowe's Ratio Test for geometric verification.
+* **Trajectory Overlay & Motion Visualizer:** Dynamic path generation and real-time motion vector rendering.
 
-## Classical Feature Tracker Proof
-Below is the verified demonstration of the sparse tracking system in action, following the moving vehicles across the scene frames:
+## Visual Proof & Visual Demonstration
+Below is the animated visual verification showing feature point trajectories and vehicle motion tracking in action:
 
-![Vehicle Motion Tracker Proof](./tracker_proof.gif)
+![Vehicle Motion Tracker Proof](assets/vehicle_tracking_demo.gif)
+
+## How to Run
+```bash
+# 1. Install Dependencies
+pip install opencv-python imageio numpy
+
+# 2. Run Tracker Script
+python vehicle_tracker.py
