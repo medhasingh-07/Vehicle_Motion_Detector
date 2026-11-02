@@ -1,170 +1,146 @@
 import cv2
 import numpy as np
-import imageio
 import os
+import imageio
 
-# --- CONFIGURATION ---
-VIDEO_PATH = "traffic.mp4"       # Target path for synthetic video generation
-GIF_PATH = "tracker_proof.gif"    # Output path for your README proof
-MAX_GIF_FRAMES = 40              # Cap frames to keep the GIF size light for GitHub
-DISPLAY_SCALE = 0.4               # Scale factor for the real-time preview window
 
-def generate_synthetic_video(file_path, width=640, height=480, fps=20, duration=5):
-    """Generates a synthetic traffic video containing high-contrast patterned objects."""
-    print("Generating synthetic traffic video asset...")
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(file_path, fourcc, fps, (width, height))
-    
-    num_frames = fps * duration
-    
-    # Define moving vehicle parameters (initial positions, speeds, patterns, and colors)
-    vehicles = [
-        {"x": 30, "y": 140, "vx": 5, "vy": 0, "size": (65, 40), "color": (120, 120, 120)},
-        {"x": 500, "y": 280, "vx": -4, "vy": 0, "size": (75, 45), "color": (70, 70, 190)},
-        {"x": 200, "y": 300, "vx": -3, "vy": -1, "size": (55, 35), "color": (160, 160, 160)}
-    ]
-    
-    for _ in range(num_frames):
-        # Draw dark canvas background with roadway strips
-        img = np.zeros((height, width, 3), dtype=np.uint8)
-        cv2.rectangle(img, (0, 120), (width, 220), (45, 45, 45), -1)
-        cv2.rectangle(img, (0, 260), (width, 380), (45, 45, 45), -1)
+class VehicleMotionTracker:
+    def __init__(self, mode='lk_optical_flow', max_corners=200, quality_level=0.3, min_distance=7):
+        """
+        Modes supported: 'lk_optical_flow' or 'orb_feature_matching'
+        """
+        self.mode = mode
         
-        # Add dotted white lane markers to create static landscape features
-        for x in range(0, width, 40):
-            cv2.line(img, (x, 170), (x + 20, 170), (255, 255, 255), 2)
-            cv2.line(img, (x, 320), (x + 20, 320), (255, 255, 255), 2)
-            
-        # Animate and draw textured vehicles designed to trigger feature descriptors
-        for v in vehicles:
-            vx_f, vy_f = int(v["x"]), int(v["y"])
-            w_v, h_v = v["size"]
-            
-            # Base vehicle shell
-            cv2.rectangle(img, (vx_f, vy_f), (vx_f + w_v, vy_f + h_v), v["color"], -1)
-            # High-contrast interior blocks (Windshields & stripes) for structural keypoints
-            cv2.rectangle(img, (vx_f + 6, vy_f + 5), (vx_f + 22, vy_f + h_v - 5), (245, 245, 245), -1)
-            cv2.rectangle(img, (vx_f + w_v - 22, vy_f + 5), (vx_f + w_v - 6, vy_f + h_v - 5), (25, 25, 25), -1)
-            cv2.circle(img, (vx_f + w_v // 2, vy_f + h_v // 2), 6, (0, 255, 255), -1)
-            
-            # Update dynamics
-            v["x"] += v["vx"]
-            v["y"] += v["vy"]
-            
-            # Wrap boundaries around edge axes
-            if v["x"] > width: v["x"] = -w_v
-            if v["x"] < -w_v: v["x"] = width
-            if v["y"] < 0 or v["y"] > height: v["vy"] *= -1
-
-        out.write(img)
+        # Lucas-Kanade Optical Flow Parameters
+        self.lk_params = dict(
+            winSize=(15, 15),
+            maxLevel=2,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03)
+        )
         
-    out.release()
-    print(f"Synthetic video successfully saved to '{file_path}'\n")
+        # Shi-Tomasi Corner Detection Parameters for LK Flow initial features
+        self.feature_params = dict(
+            maxCorners=max_corners,
+            qualityLevel=quality_level,
+            minDistance=min_distance,
+            blockSize=7
+        )
+        
+        # ORB Detector & Brute-Force Matcher setup
+        self.orb = cv2.ORB_create(nfeatures=500)
+        self.bf_matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+        
+    def track_video(self, input_video_path, output_gif_path, max_frames=150, fps=15):
+        cap = cv2.VideoCapture(input_video_path)
+        if not cap.isOpened():
+            raise FileNotFoundError(f"Error opening video file: {input_video_path}")
 
-
-def main():
-    # Automatically generate the video file if it is missing from the directory
-    if not os.path.exists(VIDEO_PATH):
-        generate_synthetic_video(VIDEO_PATH)
-
-    cap = cv2.VideoCapture(VIDEO_PATH)
-    
-    # Initialize ORB detector (tuned to 500 features for quick processing loops)
-    orb = cv2.ORB_create(nfeatures=500)
-    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
-    
-    prev_gray = None
-    prev_kp = None
-    prev_des = None
-    
-    gif_frames = []
-
-    print("Running tracking pipeline... Press 'q' inside the preview window to exit early.")
-
-    while cap.isOpened():
-        ret, frame = cap.read()
+        # Read initial frame
+        ret, old_frame = cap.read()
         if not ret:
-            break
-            
-                # --- REPLACE THIS PORTION INSIDE YOUR WHILE LOOP ---
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # 1. Boost contrast locally using CLAHE so ORB can detect vehicle borders/windows
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        gray_enhanced = clahe.apply(gray)
-        
-        # Detect keypoints on the enhanced image
-        kp, des = orb.detectAndCompute(gray_enhanced, None)
-        display_frame = frame.copy()
-        
-        if prev_gray is not None and des is not None and prev_des is not None:
-            matches = bf.knnMatch(prev_des, des, k=2)
-            
-            good_matches = []
-            active_tracking_count = 0
-            
-            for m_match in matches:
-                if len(m_match) == 2:
-                    m, n = m_match
-                    if m.distance < 0.75 * n.distance:
-                        good_matches.append(m)
-            
-            for match in good_matches:
-                pt_prev = tuple(np.round(prev_kp[match.queryIdx].pt).astype(int))
-                pt_curr = tuple(np.round(kp[match.trainIdx].pt).astype(int))
-                
-                # Calculate absolute displacement (movement distance)
-                movement_distance = np.sqrt((pt_curr[0] - pt_prev[0])**2 + (pt_curr[1] - pt_prev[1])**2)
-                
-                # 2. Filter out static background: Only draw if the point actually moved
-                if movement_distance > 1.5:  # Adjust threshold based on vehicle speed
-                    active_tracking_count += 1
-                    # Draw a distinct thick red line showing the trail
-                    cv2.line(display_frame, pt_prev, pt_curr, (0, 0, 255), 3)
-                    # Draw a bright green dot at the current leading point
-                    cv2.circle(display_frame, pt_curr, 5, (0, 255, 0), -1)
-                else:
-                    # Optional: Draw static background points as faint tiny blue dots
-                    cv2.circle(display_frame, pt_curr, 1, (255, 0, 0), -1)
-                
-            cv2.putText(display_frame, f"Active Motion Points: {active_tracking_count}", (20, 40), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        else:
-            if kp:
-                display_frame = cv2.drawKeypoints(display_frame, kp, None, color=(0, 255, 0))
-                
-        # Make sure to update the reference to the enhanced gray frame
-        prev_gray = gray_enhanced
-        prev_kp = kp
-        prev_des = des
+            print("Failed to read video stream.")
+            return
 
-
-        # Handle size scaling configurations
-        h, w = display_frame.shape[:2]
-        resized_frame = cv2.resize(display_frame, (int(w * DISPLAY_SCALE), int(h * DISPLAY_SCALE)))
-        cv2.imshow("Classical Vehicle Tracker (ORB + Matcher)", resized_frame)
+        old_gray = cv2.cvtColor(old_frame, cv2.COLOR_BGR2GRAY)
         
-        # Cache frames for compiling the GIF export
-        if len(gif_frames) < MAX_GIF_FRAMES:
-            rgb_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
-            gif_frames.append(rgb_frame)
+        # Create a mask image for drawing optical flow tracks
+        mask = np.zeros_like(old_frame)
+        
+        frames_for_gif = []
+        frame_count = 0
+        
+        if self.mode == 'lk_optical_flow':
+            p0 = cv2.goodFeaturesToTrack(old_gray, mask=None, **self.feature_params)
+        elif self.mode == 'orb_feature_matching':
+            kp_prev, des_prev = self.orb.detectAndCompute(old_gray, None)
+
+        while cap.isOpened() and frame_count < max_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
             
-        # Update frame pipeline dependencies
-        prev_gray = gray
-        prev_kp = kp
-        prev_des = des
-        
-        if cv2.waitKey(40) & 0xFF == ord('q'):
-            break
+            frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            output_frame = frame.copy()
 
-    cap.release()
-    cv2.destroyAllWindows()
-    
-    # Render and output the operational validation asset
-    if gif_frames:
-        print(f"\nCompiling {len(gif_frames)} tracking frames into '{GIF_PATH}'...")
-        imageio.mimsave(GIF_PATH, gif_frames, fps=20, loop=0)
-        print("GIF export successfully complete! Ready to push to GitHub.")
+            if self.mode == 'lk_optical_flow':
+                if p0 is not None and len(p0) > 0:
+                    # Compute Optical Flow
+                    p1, st, err = cv2.calcOpticalFlowPyrLK(old_gray, frame_gray, p0, None, **self.lk_params)
+                    
+                    if p1 is not None:
+                        # Select good points
+                        good_new = p1[st == 1]
+                        good_old = p0[st == 1]
+                        
+                        # Draw vector tracks
+                        for i, (new, old) in enumerate(zip(good_new, good_old)):
+                            a, b = new.ravel()
+                            c, d = old.ravel()
+                            mask = cv2.line(mask, (int(a), int(b)), (int(c), int(d)), (0, 255, 0), 2)
+                            output_frame = cv2.circle(output_frame, (int(a), int(b)), 4, (0, 0, 255), -1)
+                        
+                        # Update previous points and frame
+                        p0 = good_new.reshape(-1, 1, 2)
+                    
+                    # Refresh tracking keypoints if too few remain
+                    if len(p0) < 20:
+                        p0 = cv2.goodFeaturesToTrack(frame_gray, mask=None, **self.feature_params)
+                        mask = np.zeros_like(frame)
+
+            elif self.mode == 'orb_feature_matching':
+                kp_curr, des_curr = self.orb.detectAndCompute(frame_gray, None)
+                
+                if des_prev is not None and des_curr is not None and len(des_prev) > 1 and len(des_curr) > 1:
+                    # K-Nearest Neighbor matching
+                    matches = self.bf_matcher.knnMatch(des_prev, des_curr, k=2)
+                    
+                    # Apply Lowe's Ratio Test to reject ambiguous matches
+                    good_matches = []
+                    for m_n in matches:
+                        if len(m_n) == 2:
+                            m, n = m_n
+                            if m.distance < 0.75 * n.distance:
+                                good_matches.append(m)
+                    
+                    # Plot trajectory vectors on frame
+                    for match in good_matches:
+                        pt1 = tuple(np.round(kp_prev[match.queryIdx].pt).astype(int))
+                        pt2 = tuple(np.round(kp_curr[match.trainIdx].pt).astype(int))
+                        cv2.line(output_frame, pt1, pt2, (255, 0, 0), 2)
+                        cv2.circle(output_frame, pt2, 3, (0, 255, 255), -1)
+
+                kp_prev, des_prev = kp_curr, des_curr
+
+            # Overlay historical motion tracks onto current frame
+            combined_vis = cv2.add(output_frame, mask)
+            
+            # Convert BGR to RGB for imageio (GIF creation)
+            rgb_vis = cv2.cvtColor(combined_vis, cv2.COLOR_BGR2RGB)
+            frames_for_gif.append(rgb_vis)
+            
+            old_gray = frame_gray.copy()
+            frame_count += 1
+
+        cap.release()
+
+        # Save output as animated GIF proof
+        print(f"Exporting proof demo to: {output_gif_path} ...")
+        imageio.mimwrite(output_gif_path, frames_for_gif, fps=fps)
+        print("GIF Export Complete!")
+
 
 if __name__ == "__main__":
-    main()
+    # Example usage:
+    INPUT_VIDEO = "vehicles_sample.mp4"
+    OUTPUT_GIF = "assets/vehicle_tracking_demo.gif"
+    
+    os.makedirs("assets", exist_ok=True)
+
+    # Initialize and run vehicle tracker using LK Optical Flow
+    tracker = VehicleMotionTracker(mode='lk_optical_flow')
+    tracker.track_video(
+        input_video_path=INPUT_VIDEO,
+        output_gif_path=OUTPUT_GIF,
+        max_frames=120,
+        fps=12
+    )
